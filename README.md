@@ -13,6 +13,7 @@
 [![GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 [![Codex CLI](https://img.shields.io/badge/codex--cli-0.129.0-orange)](https://github.com/openai/codex)
 [![patches](https://img.shields.io/badge/patches-4-blue)](patches/)
+[![multi-platform](https://img.shields.io/badge/multi--platform-darwin%20%E2%9C%93%20linux%20%E2%9A%A0%20windows%20%E2%9A%A0-blueviolet)](README.md#compatibility-matrix)
 
 **3-layer bypass for OpenAI Codex CLI**: wrapper script + config defaults + in-place Rust Mach-O binary patches. Regex-signature patches survive minor/patch releases.
 
@@ -52,19 +53,37 @@ CCP operates on three independent layers — any single layer is sufficient to b
 ### Layer 2 — Config Defaults
 `~/.codex/config.toml` gets `default_tools_approval_mode = "never"` and full `sandbox_permissions`. Only adds keys absent from your existing config — never overwrites operator values.
 
-### Layer 3 — Binary Patches (Mach-O in-place)
-Regex-signature patches applied directly to `__TEXT.__cstring` and `__TEXT.__const` sections of the Rust binary. Length-preserving (space-pad if shorter). macOS: ad-hoc re-sign with `codesign --force --sign -` after every write (required by hardened runtime). Atomic swap: write `.tmp` → codesign → `--version` verify → rename.
+### Layer 3 — Binary Patches (format-agnostic in-place)
+Regex-signature patches applied directly to the Rust binary's string-constant sections, auto-detected by magic bytes:
+
+| Format | Sections patched |
+|---|---|
+| Mach-O (darwin) | `__TEXT.__cstring`, `__TEXT.__const` |
+| ELF (linux musl) | `.rodata`, `.data.rel.ro`, `.data` |
+| PE32+ (windows-msvc) | `.rdata`, `.data` |
+
+Length-preserving (space-pad if shorter, reject if longer). macOS Mach-O: ad-hoc re-sign with `codesign --force --sign -` after every write (required by hardened runtime). ELF / PE: no signing step required for ad-hoc patched dev binaries. Atomic swap: write `.tmp` → codesign (Mach-O only) → `--version` verify (when host arch matches) → rename.
 
 ---
 
 ## Compatibility Matrix
 
-| Codex CLI version | Wrapper | Config | Binary patches |
-|---|---|---|---|
-| 0.129.x | ✓ | ✓ | ✓ (tested) |
-| 0.130.x+ | ✓ | ✓ | likely ✓ (regex-sig) |
-| Windows | ✓ (PS1) | ✓ | placeholder |
-| Linux x64/arm64 | ✓ | ✓ | planned |
+CCP version 0.129.0 has been validated against all six platform vendor binaries shipped with `@openai/codex@0.129.0`.
+
+| Platform binary | Format | Wrapper | Config | refusal-strings | seatbelt-allow-default |
+|---|---|---|---|---|---|
+| `codex-darwin-arm64` | Mach-O arm64 | ✓ | ✓ | ✓ scan-ok | ✓ tested (real gate flip) |
+| `codex-darwin-x64`   | Mach-O x86_64 | ✓ | ✓ | ✓ scan-ok | ✓ tested (real gate flip) |
+| `codex-linux-x64`    | ELF x86_64 (musl) | ✓ | ✓ | ✓ scan-ok | ⚠ no equivalent (bubblewrap/landlock are binary structures, not text) |
+| `codex-linux-arm64`  | ELF aarch64 (musl) | ✓ | ✓ | ✓ scan-ok | ⚠ no equivalent |
+| `codex-win32-x64`    | PE32+ x86_64 | ✓ (PS1) | ✓ | ✓ scan-ok | ⚠ no equivalent (restricted-token model uses Win32 APIs, not embedded text) |
+| `codex-win32-arm64`  | PE32+ aarch64 | ✓ (PS1) | ✓ | ✓ scan-ok | ⚠ no equivalent |
+
+`scan-ok` = anchor strings resolve under `ccp scan -t <vendor-binary>`. The seatbelt patch is a real runtime-gate flip; the `rust-refusal-strings` patch is cosmetic (softens TUI log messages, does not alter runtime behavior).
+
+Patch types:
+- `macho_replace` — Mach-O only (legacy darwin binaries)
+- `binary_replace` — format-agnostic; auto-detects Mach-O / ELF / PE and patches the format's string-constant sections (`__TEXT.__cstring/__const` / `.rodata/.data.rel.ro/.data` / `.rdata/.data`)
 
 ---
 
@@ -113,6 +132,20 @@ ccp install-config   Merge bypass defaults into ~/.codex/config.toml
 ccp patch --dry-run
 ```
 
+### Inspect a specific vendor binary (multi-platform research)
+```bash
+# Pull every platform tarball:
+for tag in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+  npm pack "@openai/codex@$tag"
+done
+
+# Scan any of them without installing:
+ccp scan -t /path/to/extracted/codex
+ccp patch --dry-run -t /path/to/extracted/codex
+```
+
+`-t/--target` is supported by `patch`, `verify`, `status`, `doctor`, and `scan`. The patcher auto-detects the binary format and only applies patches that declare support for that format.
+
 ### Check status
 ```bash
 ccp status
@@ -132,8 +165,8 @@ ccp verify
 |---|---|---|
 | `config-bypass-defaults` | config_toml | Write `approval_mode=never` + `sandbox=full-access` to config.toml |
 | `wrapper-bypass-flags` | wrapper | Install `~/.local/bin/codex` wrapper with `--dangerously-bypass-approvals-and-sandbox` |
-| `rust-refusal-strings` | macho_replace | Soften approval-unsupported messages in `__TEXT.__cstring` (cosmetic, optional) |
-| `seatbelt-allow-default` | macho_replace | macOS Seatbelt: flip embedded SBPL profile head `(deny default)` → `(allow default)` (real gate flip; complements `--dangerously-bypass-approvals-and-sandbox` by neutering seatbelt even when bypass flag is not used) |
+| `rust-refusal-strings` | binary_replace | Cross-platform (Mach-O / ELF / PE) — soften approval-unsupported message constants. Cosmetic, optional. |
+| `seatbelt-allow-default` | macho_replace | macOS Seatbelt only: flip embedded SBPL profile head `(deny default)` → `(allow default)`. Real gate flip; complements `--dangerously-bypass-approvals-and-sandbox` by neutering seatbelt even when bypass flag is not used. Confirmed on darwin-arm64 + darwin-x64. |
 
 ---
 
@@ -157,19 +190,24 @@ contrib/
   preload/                   (reserved for future JS preload hooks)
 ```
 
-### Mach-O Patcher Design
-- Parses LC_SEGMENT_64 load commands to locate `__TEXT.__cstring` and `__TEXT.__const` sections
+### Binary Patcher Design (format-agnostic)
+- Auto-detects Mach-O / ELF / PE via magic bytes (`0xFEEDFACF`, `0x7FELF`, `MZ...PE\0\0`)
+- Mach-O: parses LC_SEGMENT_64 load commands → `__TEXT.__cstring`, `__TEXT.__const`
+- ELF: parses Elf64 section header table → `.rodata`, `.data.rel.ro`, `.data`
+- PE: parses COFF section header table → `.rdata`, `.data`
 - All regex replacements are **length-preserving** (space-pad shorter results, reject longer)
-- Binary size never changes → no Mach-O header fixup required
-- Ad-hoc codesign after every write (macOS hardened runtime requirement)
+- Binary size never changes → no header / section-table fixup required, no relocations disturbed
+- Ad-hoc codesign after every write (macOS Mach-O only — hardened runtime requirement)
 - Atomic swap via `.ccptmp-<pid>` sibling file, verified before rename
+- Cross-architecture aware: skips `--version` exec verify when binary is foreign-arch (e.g. patching x86_64 Mach-O on arm64 host) to avoid Rosetta timeouts
 
 ### Patch JSON Schema
 ```json
 {
   "id": "patch-id",
   "description": "human description",
-  "type": "macho_replace | config_toml | wrapper",
+  "type": "binary_replace | macho_replace | elf_replace | pe_replace | config_toml | wrapper",
+  "formats": ["macho", "elf", "pe"],
   "required": false,
   "scan_signatures": true,
   "patches": [

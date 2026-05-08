@@ -106,13 +106,15 @@ class SigScanner:
 def load_text_from_target(target: Path) -> str:
     """
     Extract patchable text from the Codex Rust binary.
-    For a Rust Mach-O binary, concatenates the contents of __TEXT.__cstring and
-    __TEXT.__const sections (where all string literals live).
+    Format-aware: concatenates the format-appropriate string-constant sections.
+      - Mach-O : __TEXT.__cstring, __TEXT.__const
+      - ELF    : .rodata, .data.rel.ro, .data
+      - PE     : .rdata, .data
     Falls back to full file bytes if section parsing fails.
     """
     from . import __main__ as _m
     data   = bytearray(target.read_bytes())
-    bounds = _m._string_section_bounds(data)
+    bounds = _m._binary_string_bounds(data)
     parts: list[str] = []
     for lo, hi in bounds:
         chunk = bytes(data[lo:hi])
@@ -148,15 +150,20 @@ def format_scan_report(rows: list[dict[str, Any]], verbose: bool = False) -> str
     return "\n".join(lines)
 
 
+_BINARY_PATCH_TYPES = ("macho_replace", "binary_replace", "elf_replace", "pe_replace")
+
+
 def load_patches_from_dir(patch_dir: Path, respect_scan_flag: bool = True) -> list[dict[str, Any]]:
-    """Load macho_replace patches only (the binary-patchable kind)."""
+    """Load all binary-patchable patches (macho_replace / binary_replace / elf_replace / pe_replace)."""
     out = []
     for f in sorted(patch_dir.glob("*.json")):
         try:
             obj = json.loads(f.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
-        if obj.get("type") != "macho_replace":
+        if obj.get("type") not in _BINARY_PATCH_TYPES:
+            continue
+        if obj.get("disabled"):
             continue
         if respect_scan_flag and obj.get("scan_signatures", True) is False:
             continue

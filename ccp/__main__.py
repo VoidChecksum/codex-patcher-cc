@@ -150,6 +150,32 @@ def sha256_short(path: Path) -> str:
     return h.hexdigest()[:12]
 
 
+# ── Format detection ──────────────────────────────────────────────────────────
+
+def _binary_format(data: bytes | bytearray) -> str:
+    """Return 'macho', 'elf', 'pe', or 'unknown' based on magic bytes."""
+    if len(data) < 8:
+        return "unknown"
+    magic4 = bytes(data[:4])
+    if magic4 in (b"\xCF\xFA\xED\xFE", b"\xFE\xED\xFA\xCF",
+                  b"\xCE\xFA\xED\xFE", b"\xFE\xED\xFA\xCE",
+                  b"\xCA\xFE\xBA\xBE", b"\xBE\xBA\xFE\xCA",
+                  b"\xCA\xFE\xBA\xBF", b"\xBF\xBA\xFE\xCA"):
+        return "macho"
+    if magic4 == b"\x7FELF":
+        return "elf"
+    if magic4[:2] == b"MZ":
+        if len(data) < 0x40:
+            return "unknown"
+        try:
+            e_lfanew = _struct.unpack_from("<I", data, 0x3C)[0]
+            if 0 <= e_lfanew < len(data) - 4 and bytes(data[e_lfanew:e_lfanew + 4]) == b"PE\x00\x00":
+                return "pe"
+        except Exception:
+            pass
+    return "unknown"
+
+
 # ── Mach-O section helpers ────────────────────────────────────────────────────
 
 def _macho_sections(data: bytes | bytearray) -> list[tuple[str, str, int, int]]:
@@ -245,6 +271,152 @@ def _string_section_bounds(data: bytes | bytearray) -> list[tuple[int, int]]:
     return bounds
 
 
+# ── ELF section helpers ───────────────────────────────────────────────────────
+
+def _elf_sections(data: bytes | bytearray) -> list[tuple[str, int, int]]:
+    """
+    Parse a 64-bit ELF binary and return (section_name, file_offset, size) tuples.
+    Returns empty list if not a recognizable ELF.
+    """
+    sections: list[tuple[str, int, int]] = []
+    if len(data) < 64 or bytes(data[:4]) != b"\x7FELF":
+        return sections
+    ei_class = data[4]   # 1=32, 2=64
+    ei_data  = data[5]   # 1=LE, 2=BE
+    end = "<" if ei_data == 1 else ">"
+    if ei_class != 2:
+        return sections  # 32-bit ELF unsupported (codex bins are 64)
+    # Elf64_Ehdr: e_shoff @ 0x28 (Q), e_shentsize @ 0x3a (H), e_shnum @ 0x3c (H), e_shstrndx @ 0x3e (H)
+    try:
+        e_shoff     = _struct.unpack_from(end + "Q", data, 0x28)[0]
+        e_shentsize = _struct.unpack_from(end + "H", data, 0x3A)[0]
+        e_shnum     = _struct.unpack_from(end + "H", data, 0x3C)[0]
+        e_shstrndx  = _struct.unpack_from(end + "H", data, 0x3E)[0]
+    except _struct.error:
+        return sections
+    if e_shoff == 0 or e_shnum == 0 or e_shentsize < 64:
+        return sections
+    # Read section header string table
+    if e_shstrndx >= e_shnum:
+        return sections
+    shstr_off = e_shoff + e_shstrndx * e_shentsize
+    if shstr_off + 64 > len(data):
+        return sections
+    try:
+        shstr_file_off = _struct.unpack_from(end + "Q", data, shstr_off + 0x18)[0]
+        shstr_size     = _struct.unpack_from(end + "Q", data, shstr_off + 0x20)[0]
+    except _struct.error:
+        return sections
+    if shstr_file_off + shstr_size > len(data):
+        return sections
+    shstrtab = bytes(data[shstr_file_off: shstr_file_off + shstr_size])
+    # Walk every section header
+    for i in range(e_shnum):
+        sh = e_shoff + i * e_shentsize
+        if sh + 64 > len(data):
+            break
+        try:
+            sh_name      = _struct.unpack_from(end + "I", data, sh + 0x00)[0]
+            sh_type      = _struct.unpack_from(end + "I", data, sh + 0x04)[0]
+            sh_offset    = _struct.unpack_from(end + "Q", data, sh + 0x18)[0]
+            sh_size      = _struct.unpack_from(end + "Q", data, sh + 0x20)[0]
+        except _struct.error:
+            continue
+        if sh_type == 8:  # SHT_NOBITS (.bss) — no file content
+            continue
+        # Read NUL-terminated name from shstrtab
+        end_n = shstrtab.find(b"\x00", sh_name)
+        if end_n < 0:
+            continue
+        name = shstrtab[sh_name:end_n].decode("ascii", errors="replace")
+        if sh_offset + sh_size > len(data):
+            continue
+        sections.append((name, sh_offset, sh_size))
+    return sections
+
+
+def _elf_string_bounds(data: bytes | bytearray) -> list[tuple[int, int]]:
+    """
+    Return (offset, end) for ELF .rodata, .data.rel.ro, and .data sections — the
+    regions that hold Rust string constants in a Linux/musl ELF binary.
+    """
+    sects = _elf_sections(data)
+    bounds: list[tuple[int, int]] = []
+    for name, off, size in sects:
+        if name in (".rodata", ".data.rel.ro", ".data") and size > 0:
+            bounds.append((off, off + size))
+    if not bounds:
+        bounds.append((0, len(data)))
+    return bounds
+
+
+# ── PE section helpers ────────────────────────────────────────────────────────
+
+def _pe_sections(data: bytes | bytearray) -> list[tuple[str, int, int]]:
+    """
+    Parse a PE32+ binary and return (section_name, raw_offset, raw_size) tuples.
+    """
+    sections: list[tuple[str, int, int]] = []
+    if len(data) < 0x40 or bytes(data[:2]) != b"MZ":
+        return sections
+    try:
+        e_lfanew = _struct.unpack_from("<I", data, 0x3C)[0]
+    except _struct.error:
+        return sections
+    if e_lfanew + 24 > len(data) or bytes(data[e_lfanew:e_lfanew + 4]) != b"PE\x00\x00":
+        return sections
+    coff = e_lfanew + 4
+    try:
+        n_sections      = _struct.unpack_from("<H", data, coff + 0x02)[0]
+        opt_header_size = _struct.unpack_from("<H", data, coff + 0x10)[0]
+    except _struct.error:
+        return sections
+    sect_table = coff + 20 + opt_header_size
+    for i in range(n_sections):
+        s = sect_table + i * 40
+        if s + 40 > len(data):
+            break
+        name = bytes(data[s:s + 8]).rstrip(b"\x00").decode("ascii", errors="replace")
+        try:
+            raw_size  = _struct.unpack_from("<I", data, s + 0x10)[0]
+            raw_off   = _struct.unpack_from("<I", data, s + 0x14)[0]
+        except _struct.error:
+            continue
+        if raw_off + raw_size > len(data):
+            continue
+        sections.append((name, raw_off, raw_size))
+    return sections
+
+
+def _pe_string_bounds(data: bytes | bytearray) -> list[tuple[int, int]]:
+    """
+    Return (offset, end) for PE .rdata and .data sections — where Rust string
+    constants live in a windows-msvc binary.
+    """
+    sects = _pe_sections(data)
+    bounds: list[tuple[int, int]] = []
+    for name, off, size in sects:
+        if name in (".rdata", ".data") and size > 0:
+            bounds.append((off, off + size))
+    if not bounds:
+        bounds.append((0, len(data)))
+    return bounds
+
+
+# ── Unified format-aware string bounds ────────────────────────────────────────
+
+def _binary_string_bounds(data: bytes | bytearray) -> list[tuple[int, int]]:
+    """Auto-detect format and return string-section bounds."""
+    fmt = _binary_format(data)
+    if fmt == "macho":
+        return _string_section_bounds(data)
+    if fmt == "elf":
+        return _elf_string_bounds(data)
+    if fmt == "pe":
+        return _pe_string_bounds(data)
+    return [(0, len(data))]
+
+
 def codesign(path: Path) -> tuple[bool, str]:
     """Ad-hoc re-sign a Mach-O binary. Required on macOS after byte modification."""
     if sys.platform != "darwin":
@@ -258,19 +430,56 @@ def codesign(path: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
-def patch_macho_inplace(binary: Path, patches: list[dict]) -> dict:
+def _can_run_native(fmt: str, data: bytes | bytearray | None = None) -> bool:
     """
-    In-place Rust Mach-O byte patcher.
-    - Reads the binary, locates __TEXT.__cstring + __TEXT.__const sections.
+    Whether the current OS+arch can execute a binary of the given format directly.
+    If `data` is provided, also checks the binary's CPU arch against the host arch.
+    On darwin we skip exec-verify when the binary is foreign-arch (Rosetta is slow
+    enough that --version timeouts cause false-positive failures during patch).
+    """
+    if fmt == "macho" and sys.platform == "darwin":
+        if data is None:
+            return True
+        # Match darwin host arch to Mach-O cputype to avoid Rosetta slowness.
+        try:
+            import platform as _plat
+            host_arch = _plat.machine()  # 'arm64' or 'x86_64'
+            magic = _struct.unpack_from(">I", data, 0)[0]
+            # Skip fat binaries — they will always have a slice that runs natively.
+            if magic in (0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA):
+                return True
+            end = ">" if magic in (0xFEEDFACF, 0xFEEDFACE) else "<"
+            cputype = _struct.unpack_from(end + "I", data, 4)[0] & 0x00FFFFFF
+            # CPU_TYPE_ARM64 = 0x0100000C & 0xFFFFFF = 0x0C; CPU_TYPE_X86_64 = 0x07
+            if cputype == 0x0C and host_arch == "arm64":
+                return True
+            if cputype == 0x07 and host_arch == "x86_64":
+                return True
+            return False  # foreign arch (e.g. x86_64 binary on arm64 host)
+        except Exception:
+            return True
+    if fmt == "elf" and sys.platform.startswith("linux"):
+        return True
+    if fmt == "pe" and sys.platform == "win32":
+        return True
+    return False
+
+
+def patch_binary_inplace(binary: Path, patches: list[dict]) -> dict:
+    """
+    In-place Rust binary byte patcher (format-agnostic).
+    - Auto-detects Mach-O / ELF / PE; locates the format's string-constant sections.
     - Applies length-preserving regex/literal replacements (space-pad if shorter).
-    - Writes to a .tmp sibling, codesigns, runs --version to verify, atomic renames.
+    - Writes to a .tmp sibling, codesigns (macOS-Mach-O only), runs --version to
+      verify when the format matches the host OS, atomic renames.
     Returns dict: {ok, applied, skipped, err?, per_patch}.
     """
     mode = binary.stat().st_mode & 0o7777
     original_size = binary.stat().st_size
     data = bytearray(binary.read_bytes())
+    fmt = _binary_format(data)
 
-    bounds = _string_section_bounds(data)
+    bounds = _binary_string_bounds(data)
     applied_total = 0
     skipped_total = 0
     per_patch: list[dict] = []
@@ -359,44 +568,54 @@ def patch_macho_inplace(binary: Path, patches: list[dict]) -> dict:
         tmp_bin.write_bytes(bytes(data))
         tmp_bin.chmod(mode)
 
-        # macOS: must re-sign or hardened runtime will SIGKILL
-        ok_sign, sign_msg = codesign(tmp_bin)
-        if not ok_sign:
-            tmp_bin.unlink(missing_ok=True)
-            return {
-                "ok": False,
-                "err": f"codesign failed: {sign_msg}",
-                "applied": applied_total,
-                "skipped": skipped_total,
-                "per_patch": per_patch,
-            }
+        # macOS Mach-O: must re-sign or hardened runtime will SIGKILL.
+        # ELF / PE: no signing step required for ad-hoc patched dev binaries.
+        if fmt == "macho":
+            ok_sign, sign_msg = codesign(tmp_bin)
+            if not ok_sign:
+                tmp_bin.unlink(missing_ok=True)
+                return {
+                    "ok": False,
+                    "err": f"codesign failed: {sign_msg}",
+                    "applied": applied_total,
+                    "skipped": skipped_total,
+                    "per_patch": per_patch,
+                }
 
-        r = subprocess.run(
-            [str(tmp_bin), "--version"],
-            capture_output=True, text=True, timeout=20,
-        )
-        out = (r.stdout or "") + (r.stderr or "")
-        if r.returncode != 0 or not out.strip():
-            tmp_bin.unlink(missing_ok=True)
-            return {
-                "ok": False,
-                "err": f"verify failed: {out[:120]!r} rc={r.returncode}",
-                "applied": applied_total,
-                "skipped": skipped_total,
-                "per_patch": per_patch,
-            }
+        # Verify only when host can execute this format. Cross-format targets
+        # (e.g. patching a Linux ELF on a macOS host via -t) skip exec verify.
+        if _can_run_native(fmt, bytes(data[:0x40])):
+            r = subprocess.run(
+                [str(tmp_bin), "--version"],
+                capture_output=True, text=True, timeout=20,
+            )
+            out = (r.stdout or "") + (r.stderr or "")
+            if r.returncode != 0 or not out.strip():
+                tmp_bin.unlink(missing_ok=True)
+                return {
+                    "ok": False,
+                    "err": f"verify failed: {out[:120]!r} rc={r.returncode}",
+                    "applied": applied_total,
+                    "skipped": skipped_total,
+                    "per_patch": per_patch,
+                }
 
         binary.unlink()
         tmp_bin.rename(binary)
         binary.chmod(mode)
-        # Re-sign the installed binary
-        codesign(binary)
+        # Re-sign the installed binary (Mach-O only)
+        if fmt == "macho":
+            codesign(binary)
 
     except Exception as e:
         tmp_bin.unlink(missing_ok=True)
         return {"ok": False, "err": f"write failed: {e}", "applied": 0, "skipped": skipped_total}
 
-    return {"ok": True, "applied": applied_total, "skipped": skipped_total, "per_patch": per_patch}
+    return {"ok": True, "applied": applied_total, "skipped": skipped_total, "per_patch": per_patch, "fmt": fmt}
+
+
+# Backward-compat alias — older code paths and tests still call this name.
+patch_macho_inplace = patch_binary_inplace
 
 
 # ── patch loading ─────────────────────────────────────────────────────────────
@@ -490,12 +709,57 @@ def _apply_wrapper(p: dict, target: Path | None, dry_run: bool = False) -> tuple
 
 # ── commands ──────────────────────────────────────────────────────────────────
 
+_BINARY_PATCH_TYPES = ("macho_replace", "binary_replace", "elf_replace", "pe_replace")
+
+
+def _is_binary_patch(p: dict) -> bool:
+    return p.get("type") in _BINARY_PATCH_TYPES
+
+
+def _patch_applies_to_format(p: dict, fmt: str) -> bool:
+    """
+    Decide whether a binary patch is allowed against a binary of `fmt`.
+    - `macho_replace` -> macho only (legacy, pre-multi-platform)
+    - `elf_replace`   -> elf only
+    - `pe_replace`    -> pe only
+    - `binary_replace` -> any format unless the patch declares `formats: [...]`
+    """
+    t = p.get("type")
+    if t == "macho_replace":
+        return fmt == "macho"
+    if t == "elf_replace":
+        return fmt == "elf"
+    if t == "pe_replace":
+        return fmt == "pe"
+    if t == "binary_replace":
+        formats = p.get("formats")
+        if formats:
+            return fmt in formats
+        return fmt in ("macho", "elf", "pe")
+    return False
+
+
+def _resolve_target(args) -> Path | None:
+    """
+    Resolve the target binary. Honors -t/--target if provided on the args ns,
+    otherwise falls back to autodetection via find_target().
+    """
+    explicit = getattr(args, "target", None)
+    if explicit:
+        p = Path(explicit).expanduser().resolve()
+        if not p.is_file():
+            print(f"{R}explicit target not found: {p}{X}", file=sys.stderr)
+            return None
+        return p
+    return find_target()
+
+
 def cmd_patch(args) -> int:
     patches = load_patches()
-    target  = find_target()
+    target  = _resolve_target(args)
 
-    binary_patches = [p for p in patches if p.get("type") == "macho_replace"]
-    meta_patches   = [p for p in patches if p.get("type") not in ("macho_replace",)]
+    binary_patches = [p for p in patches if _is_binary_patch(p)]
+    meta_patches   = [p for p in patches if not _is_binary_patch(p)]
 
     print(f"{B}ccp patch — {len(patches)} patches{X}")
     if target:
@@ -515,48 +779,59 @@ def cmd_patch(args) -> int:
         for p in binary_patches:
             print(f"  {Y}skip{X} {p.get('id','?'):40s}  target not found")
             skip += 1
-    elif args.dry_run:
-        for p in binary_patches:
-            data = bytearray(target.read_bytes())
-            bounds = _string_section_bounds(data)
-            applied_n = 0
-            for sub in p.get("patches", []):
-                marker = sub.get("applied_marker")
-                if marker:
-                    marker_b = marker.encode("utf-8", "surrogateescape")
-                    if any(data.find(marker_b, lo, hi) >= 0 for lo, hi in bounds):
-                        continue
-                sr = sub.get("search_regex") or sub.get("search") or ""
-                if not sr:
-                    continue
-                try:
-                    if sub.get("search_regex"):
-                        pat = re.compile(sr.encode("utf-8", "surrogateescape"), re.DOTALL)
-                        for lo, hi in bounds:
-                            applied_n += sum(1 for _ in pat.finditer(bytes(data[lo:hi])))
-                    else:
-                        s_b = sr.encode("utf-8", "surrogateescape")
-                        for lo, hi in bounds:
-                            applied_n += bytes(data[lo:hi]).count(s_b)
-                except re.error:
-                    pass
-            msg = "no-op (already applied)" if applied_n == 0 else f"would apply {applied_n} in-place"
-            print(f"  {G}ok{X}    {p.get('id','?'):40s}  {msg}")
-            ok += 1
-        print(f"  {Y}dry-run: binary not modified{X}")
     else:
-        result = patch_macho_inplace(target, binary_patches)
-        if not result["ok"]:
-            print(f"  {R}fail{X}  [macho-inplace]  {result.get('err','unknown')}")
-            fail += len(binary_patches)
-        else:
-            for pr in result.get("per_patch", []):
-                n   = pr["applied"]
-                msg = "no-op (already applied)" if n == 0 else f"{n} in-place replacement(s)"
-                print(f"  {G}ok{X}    {pr['id']:40s}  {msg}")
+        data_full = bytearray(target.read_bytes())
+        fmt = _binary_format(data_full)
+        applicable  = [p for p in binary_patches if _patch_applies_to_format(p, fmt)]
+        skipped_fmt = [p for p in binary_patches if not _patch_applies_to_format(p, fmt)]
+        for p in skipped_fmt:
+            print(f"  {Y}skip{X} {p.get('id','?'):40s}  type={p.get('type')} not applicable to fmt={fmt}")
+            skip += 1
+        if args.dry_run:
+            bounds = _binary_string_bounds(data_full)
+            for p in applicable:
+                applied_n = 0
+                for sub in p.get("patches", []):
+                    marker = sub.get("applied_marker")
+                    if marker:
+                        marker_b = marker.encode("utf-8", "surrogateescape")
+                        if any(data_full.find(marker_b, lo, hi) >= 0 for lo, hi in bounds):
+                            continue
+                    sr = sub.get("search_regex") or sub.get("search") or ""
+                    if not sr:
+                        continue
+                    try:
+                        if sub.get("search_regex"):
+                            pat = re.compile(sr.encode("utf-8", "surrogateescape"), re.DOTALL)
+                            for lo, hi in bounds:
+                                applied_n += sum(1 for _ in pat.finditer(bytes(data_full[lo:hi])))
+                        else:
+                            s_b = sr.encode("utf-8", "surrogateescape")
+                            for lo, hi in bounds:
+                                applied_n += bytes(data_full[lo:hi]).count(s_b)
+                    except re.error:
+                        pass
+                msg = "no-op (already applied)" if applied_n == 0 else f"would apply {applied_n} in-place"
+                print(f"  {G}ok{X}    {p.get('id','?'):40s}  {msg}")
                 ok += 1
-            if not result.get("noop"):
-                print(f"  {G}verified in-place{X}  (ran binary --version, output confirmed)")
+            print(f"  {Y}dry-run: binary not modified{X}")
+        elif not applicable:
+            pass  # nothing to do for this format
+        else:
+            result = patch_binary_inplace(target, applicable)
+            if not result["ok"]:
+                print(f"  {R}fail{X}  [{fmt}-inplace]  {result.get('err','unknown')}")
+                fail += len(applicable)
+            else:
+                for pr in result.get("per_patch", []):
+                    n   = pr["applied"]
+                    msg = "no-op (already applied)" if n == 0 else f"{n} in-place replacement(s)"
+                    print(f"  {G}ok{X}    {pr['id']:40s}  {msg}")
+                    ok += 1
+                if not result.get("noop") and _can_run_native(fmt, bytes(data_full[:0x40])):
+                    print(f"  {G}verified in-place{X}  (ran binary --version, output confirmed)")
+                elif not result.get("noop"):
+                    print(f"  {Y}wrote in-place{X}  (skipped --version verify: foreign fmt/arch)")
 
     # ── meta patches ───────────────────────────────────────────────────────
     for p in meta_patches:
@@ -586,17 +861,20 @@ def cmd_patch(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    target = find_target()
+    target = _resolve_target(args)
     if not target:
         print(f"{R}codex binary not found{X}")
         return 2
 
     data   = bytearray(target.read_bytes())
-    bounds = _string_section_bounds(data)
+    fmt    = _binary_format(data)
+    bounds = _binary_string_bounds(data)
 
     missing = 0
     for p in load_patches():
-        if p.get("type") != "macho_replace":
+        if not _is_binary_patch(p):
+            continue
+        if not _patch_applies_to_format(p, fmt):
             continue
         for sub in p.get("patches", []):
             if not sub.get("required", True):
@@ -640,12 +918,19 @@ def cmd_rollback(args) -> int:
 
 
 def cmd_status(args) -> int:
-    target  = find_target()
+    target  = _resolve_target(args)
     patches = load_patches()
     print(f"{B}ccp status{X}")
     print(f"  patches : {len(patches)}")
     if target:
+        try:
+            with target.open("rb") as _fh:
+                _head = _fh.read(0x1000)
+            fmt = _binary_format(_head)
+        except Exception:
+            fmt = "unknown"
         print(f"  target  : {target}")
+        print(f"  format  : {fmt}")
         print(f"  sha256  : {sha256_short(target)}")
         print(f"  size    : {target.stat().st_size // 1024 // 1024} MB")
     else:
@@ -676,7 +961,7 @@ def cmd_list(args) -> int:
 
 def cmd_scan(args) -> int:
     """Signature-based offset discovery. Prints anchor offsets + regex hit status."""
-    target = find_target()
+    target = _resolve_target(args)
     if not target:
         print(f"{R}codex binary not found{X}")
         return 2
@@ -687,11 +972,19 @@ def cmd_scan(args) -> int:
         print(f"{R}extract failed: {e}{X}")
         return 2
 
+    try:
+        with target.open("rb") as _fh:
+            fmt = _binary_format(_fh.read(0x1000))
+    except Exception:
+        fmt = "unknown"
+
     patches = _scanner.load_patches_from_dir(PATCH_DIR)
+    # Filter to patches that apply to this binary's format.
+    patches = [p for p in patches if _patch_applies_to_format(p, fmt)]
     sc      = _scanner.SigScanner(text)
     rows    = sc.scan_patches(patches)
 
-    print(f"{B}ccp scan — {len(rows)} macho_replace patches{X}")
+    print(f"{B}ccp scan — {len(rows)} binary patches (fmt={fmt}){X}")
     print(f"  target : {target}")
     print(f"  text   : {len(text)} bytes extracted")
     print(f"  sha    : {sha256_short(target)}")
@@ -705,18 +998,25 @@ def cmd_doctor(args) -> int:
     """Full health report: sha, patches applied, sig drift, backup count, upstream, codex version."""
     from . import __version__ as _ver
 
-    target  = find_target()
+    target  = _resolve_target(args)
     patches = load_patches()
-    binary_patches = [p for p in patches if p.get("type") == "macho_replace"]
+    binary_patches = [p for p in patches if _is_binary_patch(p)]
 
     print(f"{B}ccp doctor{X}")
     print(f"  ccp ver    : {_ver}")
 
     # ── target ────────────────────────────────────────────────────────────────
+    fmt = "unknown"
     if not target:
         print(f"  target     : {R}NOT FOUND — install via 'npm install -g @openai/codex'{X}")
     else:
+        try:
+            with target.open("rb") as _fh:
+                fmt = _binary_format(_fh.read(0x1000))
+        except Exception:
+            fmt = "unknown"
         print(f"  target     : {target}")
+        print(f"  format     : {fmt}")
         print(f"  sha256     : {sha256_short(target)}")
         sz_mb = target.stat().st_size / 1024 / 1024
         print(f"  size       : {sz_mb:.1f} MB")
@@ -727,8 +1027,11 @@ def cmd_doctor(args) -> int:
     # ── per-patch applied status ──────────────────────────────────────────────
     if target:
         data   = bytearray(target.read_bytes())
-        bounds = _string_section_bounds(data)
+        bounds = _binary_string_bounds(data)
         for p in binary_patches:
+            if not _patch_applies_to_format(p, fmt):
+                print(f"  {DOT} skip       : {p.get('id','?')}  (not applicable to fmt={fmt})")
+                continue
             applied = False
             for sub in p.get("patches", []):
                 marker = sub.get("applied_marker")
@@ -739,7 +1042,7 @@ def cmd_doctor(args) -> int:
                         break
             icon = f"{G}{CHECK}{X}" if applied else f"{Y}{WARN_ICON}{X}"
             print(f"  {icon} patch      : {p.get('id','?')}  ({'applied' if applied else 'not applied'})")
-        for p in [x for x in patches if x.get("type") not in ("macho_replace",)]:
+        for p in [x for x in patches if not _is_binary_patch(x)]:
             print(f"  {DOT} meta       : {p.get('id','?')}  (type={p.get('type','?')})")
 
     # ── backups ───────────────────────────────────────────────────────────────
@@ -1091,17 +1394,29 @@ def main() -> int:
     )
     sub = ap.add_subparsers(dest="cmd", metavar="command")
 
+    def _add_target(p):
+        p.add_argument(
+            "-t", "--target",
+            help="Explicit binary path (skip auto-detect). Useful for inspecting "
+                 "vendor binaries for other platforms.",
+        )
+
     p_patch = sub.add_parser("patch", help="Apply all patches to the Codex binary + config")
     p_patch.add_argument("--dry-run", "-n", action="store_true")
+    _add_target(p_patch)
 
-    sub.add_parser("verify",   help="Check that binary patches are applied")
+    p_verify = sub.add_parser("verify",   help="Check that binary patches are applied")
+    _add_target(p_verify)
     sub.add_parser("rollback", help="Restore binary from most recent backup")
-    sub.add_parser("status",   help="Show install state and binary location")
+    p_status = sub.add_parser("status",   help="Show install state and binary location")
+    _add_target(p_status)
     sub.add_parser("list",     help="List all patches in catalog")
-    sub.add_parser("doctor",   help="Full health report: target, patches, sig drift, upstream")
+    p_doctor = sub.add_parser("doctor",   help="Full health report: target, patches, sig drift, upstream")
+    _add_target(p_doctor)
 
     p_sc = sub.add_parser("scan", help="Signature-based anchor discovery in binary string sections")
     p_sc.add_argument("--verbose", "-v", action="store_true")
+    _add_target(p_sc)
 
     p_su = sub.add_parser("self-update",
         help="Pull latest patches/*.json from GitHub and re-apply")

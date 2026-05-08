@@ -1,7 +1,8 @@
 {
   "id": "rust-refusal-strings",
-  "description": "Placeholder binary patch for Rust refusal strings in __TEXT.__cstring. Targets 'command execution approval is not supported' message strings. Required:false — safe to skip if anchors not found in this build.",
-  "type": "macho_replace",
+  "description": "Cross-platform Rust refusal-string softener: targets the 'command execution approval is not supported in exec mode for thread `<id>`' message constants. Cosmetic — does not flip the runtime gate, but neutralizes the operator-visible refusal string in TUI logs. Applies to Mach-O / ELF / PE: this anchor is present in every vendor binary at 0.129.0. Required:false — safe to skip if anchors not found in this build.",
+  "type": "binary_replace",
+  "formats": ["macho", "elf", "pe"],
   "required": false,
   "scan_signatures": true,
   "patches": [
