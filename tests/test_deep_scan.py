@@ -7,8 +7,6 @@ tests would couple to a specific codex build and break on every release.
 
 from __future__ import annotations
 
-import pytest
-
 from ccp import deep_scan as ds
 
 
