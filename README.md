@@ -279,6 +279,78 @@ Typical use: add `ccp autoheal` to a post-install hook or cron to survive Codex 
 
 ---
 
+## Why it survives every Codex update
+
+Codex CLI is a Rust binary distributed via npm — `npm install -g @openai/codex` re-downloads it on every release. CCP survives via three mechanisms:
+
+1. **Anchor strings, not byte offsets.** Each patch JSON declares one or more `anchor_strings` (e.g., `"network target rejected by policy"`). When `ccp patch` runs, the patcher resolves anchors to fresh byte offsets in the current binary instead of trusting hardcoded addresses. A Codex update that shifts code or string-table layout still finds the gate as long as the anchor string survives.
+2. **Length-preserving replacements.** Every patch's `replace_bytes_hex` is `<= match_bytes_hex` length. The patcher space-pads or NOPs the difference so the binary's overall layout — relocations, code-flow targets, signatures — never shifts. This is why `ccp patch` can run idempotently on every Codex release without breaking the load command map.
+3. **Autoheal loop.** `ccp autoheal` (or `ccp watch` for daemon mode) detects when a Codex update has installed a new binary, pulls fresh patch JSON from this repo via `ccp self-update`, and re-applies. If a patch's anchor has truly drifted, the patch silently skips with `sig-drift` rather than corrupting the binary; the catalog is updated, the patch is re-shipped, and the next `ccp patch` re-converges.
+
+The `ccp doctor` command reports the per-layer state so you can see at a glance whether sig-drift, codesign-mismatch, or upstream-update is the reason a layer isn't applied.
+
+---
+
+## Manual RE — finding new gate candidates
+
+Full walkthrough in [docs/RE-METHODOLOGY.md](docs/RE-METHODOLOGY.md). Quick reference using radare2:
+
+```bash
+# 1. Anchor discovery — find string addresses
+r2 -q -c 'aa; iz~+approval' "$(ccp status -t -)" \
+   | head -20
+
+# 2. Xrefs to a string anchor → enclosing function
+r2 -q -c 'aa; axt @ str.network_target_rejected_by_policy' \
+        /path/to/codex
+
+# 3. Disassemble the consuming function
+r2 -q -c 'aa; pdf @ <fn-addr>' /path/to/codex
+
+# 4. Or use ccp's wrapper to walk anchor → gate candidates in one shot
+ccp scan-gates --anchor "network target rejected by policy"
+```
+
+Once you've identified a gate (typically a `cmp; b.eq; b <error>` or `tbz/tbnz` pattern), capture:
+- `match_bytes_hex` — the 4-byte instruction(s) currently at the offset
+- `replace_bytes_hex` — the length-preserving replacement (`arm64_nop()`, branch flip, etc. — see `ccp/instr_patcher.py`)
+- `offset_from_anchor` — signed byte distance from the anchor's first occurrence
+
+Wrap into a JSON patch following `patches/11-seatbelt-allow-default.json` (string-style) or the `instr_replace` schema documented in `ccp/instr_patcher.py`'s docstring.
+
+The full source-level gate catalog (26 enumerated gates against codex-rs v0.129.0) lives in [docs/GATES.md](docs/GATES.md) — recommended reading before authoring new patches.
+
+---
+
+## Authorization & use
+
+CCP modifies the OpenAI Codex CLI binary on the operator's local workstation. Intended uses:
+- Authorized B2B penetration testing and red-team engagements where Codex is operator-driven.
+- Bug bounty research where the operator owns the test environment.
+- Reverse engineering and security research under explicit contractual authorization.
+- Personal-workstation use by an operator who understands the trust model they're modifying.
+
+CCP does NOT:
+- Send any telemetry to anyone. No phone-home, no analytics, no remote update from anywhere except this GitHub repo on operator request.
+- Bypass any cloud-side approval that OpenAI's servers enforce. Server-side guardrails are out of scope; CCP only modifies the *local* CLI's gating.
+- Authenticate with OpenAI on the operator's behalf. Login still uses `codex login` against OpenAI's APIs.
+
+The `~/.codex/AGENTS.md` file installed by `ccp install-rules` documents the operator-authorization doctrine that Codex itself reads on startup; review it before deploying CCP into any environment that isn't your personal workstation.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting; see the four hard-stop scope limits in `~/.codex/AGENTS.md` for the operator's standing instructions.
+
+---
+
+## Credits & refs
+
+- [openai/codex](https://github.com/openai/codex) — the upstream Codex CLI
+- [vpcc / void-patcher-cc](https://github.com/VoidChecksum/void-patcher-cc) — the sibling project for Claude Code; CCP mirrors its architecture and patch-JSON schema
+- [radare2](https://github.com/radareorg/radare2) — disassembly used by `ccp scan-gates` and the manual-RE walkthrough
+- [Frida](https://frida.re) — runtime instrumentation used by layer 4 (`contrib/frida/codex-bypass.js`)
+- [capstone](https://www.capstone-engine.org) — arm64 / x86_64 disassembly verification in `ccp/instr_patcher.py`
+
+---
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
