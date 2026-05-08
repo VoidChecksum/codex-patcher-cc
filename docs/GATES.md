@@ -43,7 +43,7 @@ entries.
 | 9 | safety-patch-rejection-reason-strings | core/src/safety.rs:16-19, 130-134 | static `__cstring` rewrite | -- | candidate |
 | 10 | exec-policy-prompt-conflict | core/src/exec_policy.rs:43-48, 339-343 | static `__cstring` rewrite + decision-flip patch | -- | candidate |
 | 11 | exec-policy-render-decision | core/src/exec_policy.rs:632-744 | runtime (Frida) | -- | runtime-only |
-| 12 | exec-policy-Decision::Forbidden-on-Never | core/src/exec_policy.rs:687-690 | instruction-level branch flip | -- | candidate |
+| 12 | exec-policy-Decision::Forbidden-on-Never | core/src/exec_policy.rs:687-690 | instruction-level branch flip | patches/13 | shipped |
 | 13 | exec-approval-needs-approval | core/src/tools/sandboxing.rs:204-240 | runtime (Frida) | -- | runtime-only |
 | 14 | exec-approval-should_bypass | core/src/tools/sandboxing.rs:299-305 | argv match-arm flip | -- | runtime-only |
 | 15 | exec-approval-wants_no_sandbox | core/src/tools/sandboxing.rs:320-328 | match-arm flip | -- | runtime-only |
@@ -51,7 +51,7 @@ entries.
 | 17 | shell-handler-onrequest-only-escalation | core/src/tools/handlers/shell.rs:178-188 | runtime (Frida) | -- | runtime-only |
 | 18 | network-policy-host_blocked | network-proxy/src/network_policy.rs:289-319 | runtime (Frida) | -- | runtime-only |
 | 19 | network-policy-NotAllowed-deny | network-proxy/src/network_policy.rs:297-310 | runtime (Frida) | -- | runtime-only |
-| 20 | network-connect-non-public-ip | network-proxy/src/connect_policy.rs:69-79 | static `__cstring` rewrite + `b.eq` flip | -- | candidate |
+| 20 | network-connect-non-public-ip | network-proxy/src/connect_policy.rs:69-79 | static `__cstring` rewrite + `b.eq` flip | patches/12 | shipped |
 | 21 | network-approval-deny-not-allowed | core/src/tools/network_approval.rs:408-454 (REASON_NOT_ALLOWED) | runtime (Frida) | -- | runtime-only |
 | 22 | network-policy-decision-domain-denied | core/src/network_policy_decision.rs:46-61 | static `__cstring` rewrite | -- | low-value |
 | 23 | mcp-exec-approval-elicit | mcp-server/src/exec_approval.rs:51-80 | bypass via approval-mode config | covered by patches/01 | covered |
@@ -577,9 +577,9 @@ Total gates enumerated: **26**, of which:
 
 | Class | Count | Notes |
 |-------|-------|-------|
-| Statically patched (shipped) | 4 | Gates 1, 6, 7, 25 (covered by patches/01, 02, 10, 11) |
-| Static-patchable, not yet patched | 5 | Gates 2, 3, 12, 20, plus partial Gate 10 |
-| Instruction-level patchable | 3 | Gates 12, 17, 20 (b.cond / tbz flips) |
+| Statically patched (shipped) | 6 | Gates 1, 6, 7, 12, 20, 25 (covered by patches/01, 02, 10, 11, 12, 13) |
+| Static-patchable, not yet patched | 3 | Gates 2, 3, plus partial Gate 10 |
+| Instruction-level patchable | 3 | Gates 12✅, 17, 20✅ (b.cond / tbz flips) |
 | Runtime-only (Frida) | 8 | Gates 8, 11, 13-16, 18, 19, 21 |
 | Already covered by config / wrapper | 6 | Gates 5, 7, 13, 23, 24, 26 |
 

@@ -1,0 +1,23 @@
+{
+  "id": "instr-network-connect-non-public-ip-allow",
+  "type": "instr_replace",
+  "arch": "arm64",
+  "description": "Gate 20 (network-connect-non-public-ip): flip cbz→b in connect_policy.rs async fn connect(). The Rust async poll logic calls allow_local_binding().await?, then branches on the bool result: cbz w0, #.Lcontinue jumps past the error path when w0=0 (binding not allowed), falling through to build the PermissionDenied error with 'network target rejected by policy'. By replacing cbz with an unconditional branch (b #.Lcontinue), the error path is never reached — the connect always proceeds regardless of is_non_public_ip(addr.ip()). This lets codex's outbound CONNECT proxy reach localhost/RFC1918/link-local addresses without allow_local_binding=true in the config. Length-preserving: cbz (4 bytes) → b (4 bytes).",
+  "required": false,
+  "patches": [
+    {
+      "anchor": "network target rejected by policy",
+      "offset_from_anchor": -137539523,
+      "match_bytes_hex": "20020034",
+      "match_disasm": "cbz w0, #0x1006f5b30",
+      "replace_bytes_hex": "11000014",
+      "replace_disasm": "b #0x1006f5b30  (unconditional; error path never reached)",
+      "applied_marker_hex": "11000014",
+      "description": "cbz w0→b: skip the is_non_public_ip deny branch unconditionally"
+    }
+  ],
+  "anchor_strings": [
+    "network target rejected by policy"
+  ],
+  "version_last_tested": "0.129.0"
+}

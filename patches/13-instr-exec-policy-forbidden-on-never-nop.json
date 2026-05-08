@@ -1,0 +1,23 @@
+{
+  "id": "instr-exec-policy-forbidden-on-never-nop",
+  "type": "instr_replace",
+  "arch": "arm64",
+  "description": "Gate 12 (exec-policy-Decision::Forbidden-on-Never): NOP the b.ne gate in render_decision_for_unmatched_command() (core/src/exec_policy.rs:687-690). The Rust match arm 'AskForApproval::Never => { if sandbox_is_explicitly_disabled { Decision::Allow } else { Decision::Forbidden } }' compiles to a cmp+b.hs dispatch that jumps to 0x1029134cc when the AskForApproval discriminant is >= 3. At 0x1029134cc a b.ne branches to the error-emit path (which loads 'approval required by policy, but AskForApproval is set to Never') when the discriminant is NOT exactly 3. By replacing b.ne with NOP, execution always falls through to the allow/continue path at 0x1029134d0, preventing the Forbidden decision branch from being taken. Length-preserving: b.ne (4 bytes) → nop (4 bytes).",
+  "required": false,
+  "patches": [
+    {
+      "anchor": "approval required by policy, but AskForApproval is set to Never",
+      "offset_from_anchor": -102419423,
+      "match_bytes_hex": "01070054",
+      "match_disasm": "b.ne #0x1029135ac  (branches to Forbidden/error path)",
+      "replace_bytes_hex": "1f2003d5",
+      "replace_disasm": "nop  (fall through to allow path at 0x1029134d0)",
+      "applied_marker_hex": "1f2003d5",
+      "description": "NOP the b.ne gate so Decision::Forbidden is never taken under AskForApproval::Never"
+    }
+  ],
+  "anchor_strings": [
+    "approval required by policy, but AskForApproval is set to Never"
+  ],
+  "version_last_tested": "0.129.0"
+}

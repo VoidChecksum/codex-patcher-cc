@@ -12,7 +12,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
 [![GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 [![Codex CLI](https://img.shields.io/badge/codex--cli-0.129.0-orange)](https://github.com/openai/codex)
-[![patches](https://img.shields.io/badge/patches-4-blue)](patches/)
+[![patches](https://img.shields.io/badge/patches-6-blue)](patches/)
 [![multi-platform](https://img.shields.io/badge/multi--platform-darwin%20%E2%9C%93%20linux%20%E2%9A%A0%20windows%20%E2%9A%A0-blueviolet)](README.md#compatibility-matrix)
 
 **5-layer bypass for OpenAI Codex CLI**: wrapper → config → static binary patches (Mach-O / ELF / PE) → Frida runtime hooks → arm64/x86_64 instruction-level patches. Regex-signature patches survive minor/patch releases. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for per-layer guarantees and [docs/GATES.md](docs/GATES.md) for the source-level gate map (26 gates enumerated against `codex-rs`).
@@ -167,6 +167,8 @@ ccp verify
 | `wrapper-bypass-flags` | wrapper | Install `~/.local/bin/codex` wrapper with `--dangerously-bypass-approvals-and-sandbox` |
 | `rust-refusal-strings` | binary_replace | Cross-platform (Mach-O / ELF / PE) — soften approval-unsupported message constants. Cosmetic, optional. |
 | `seatbelt-allow-default` | macho_replace | macOS Seatbelt only: flip embedded SBPL profile head `(deny default)` → `(allow default)`. Real gate flip; complements `--dangerously-bypass-approvals-and-sandbox` by neutering seatbelt even when bypass flag is not used. Confirmed on darwin-arm64 + darwin-x64. |
+| `instr-network-connect-non-public-ip-allow` | instr_replace | darwin-arm64: `cbz w0→b` in `connect_policy.rs::connect()` — unconditional branch past the `is_non_public_ip` deny path so codex's outbound proxy can reach localhost/RFC1918 addresses without `allow_local_binding=true`. |
+| `instr-exec-policy-forbidden-on-never-nop` | instr_replace | darwin-arm64: NOP the `b.ne` in `exec_policy.rs::render_decision_for_unmatched_command()` — prevents `Decision::Forbidden` under `AskForApproval::Never` when sandbox is not explicitly disabled. Belt-and-braces with the config bypass. |
 
 The full source-level enumeration of 26 codex-rs gates (with file:line citations, patch-strategy classification, and impact assessment per gate) lives in [docs/GATES.md](docs/GATES.md). The patches catalog above is the subset that has been authored to date; the remaining gates are either (a) covered by `--dangerously-bypass-approvals-and-sandbox` + config defaults (Layer 1+2), (b) candidates for Layer 5 `instr_replace` patches, or (c) Frida runtime hooks (Layer 4). See `docs/GATES.md` §4 for the recommended next-patch ranking.
 
@@ -185,6 +187,8 @@ patches/
   02-wrapper-bypass-flags.json
   10-rust-refusal-strings.json
   11-seatbelt-allow-default.json
+  12-instr-network-connect-allow.json
+  13-instr-exec-policy-forbidden-on-never-nop.json
 contrib/
   wrappers/codex             bash wrapper script
   rules/codex-config.toml   TOML config template
