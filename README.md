@@ -15,7 +15,7 @@
 [![patches](https://img.shields.io/badge/patches-4-blue)](patches/)
 [![multi-platform](https://img.shields.io/badge/multi--platform-darwin%20%E2%9C%93%20linux%20%E2%9A%A0%20windows%20%E2%9A%A0-blueviolet)](README.md#compatibility-matrix)
 
-**3-layer bypass for OpenAI Codex CLI**: wrapper script + config defaults + in-place Rust Mach-O binary patches. Regex-signature patches survive minor/patch releases.
+**5-layer bypass for OpenAI Codex CLI**: wrapper → config → static binary patches (Mach-O / ELF / PE) → Frida runtime hooks → arm64/x86_64 instruction-level patches. Regex-signature patches survive minor/patch releases. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for per-layer guarantees and [docs/GATES.md](docs/GATES.md) for the source-level gate map (26 gates enumerated against `codex-rs`).
 
 ---
 
