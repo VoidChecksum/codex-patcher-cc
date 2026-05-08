@@ -168,6 +168,8 @@ ccp verify
 | `rust-refusal-strings` | binary_replace | Cross-platform (Mach-O / ELF / PE) — soften approval-unsupported message constants. Cosmetic, optional. |
 | `seatbelt-allow-default` | macho_replace | macOS Seatbelt only: flip embedded SBPL profile head `(deny default)` → `(allow default)`. Real gate flip; complements `--dangerously-bypass-approvals-and-sandbox` by neutering seatbelt even when bypass flag is not used. Confirmed on darwin-arm64 + darwin-x64. |
 
+The full source-level enumeration of 26 codex-rs gates (with file:line citations, patch-strategy classification, and impact assessment per gate) lives in [docs/GATES.md](docs/GATES.md). The patches catalog above is the subset that has been authored to date; the remaining gates are either (a) covered by `--dangerously-bypass-approvals-and-sandbox` + config defaults (Layer 1+2), (b) candidates for Layer 5 `instr_replace` patches, or (c) Frida runtime hooks (Layer 4). See `docs/GATES.md` §4 for the recommended next-patch ranking.
+
 ---
 
 ## Architecture
