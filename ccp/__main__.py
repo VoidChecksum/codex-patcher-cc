@@ -1385,6 +1385,96 @@ def cmd_install_config(args) -> int:
     return 0
 
 
+def cmd_install_frida(args) -> int:
+    """Deploy the Frida runtime bypass agent (layer 4)."""
+    from . import runtime as rt
+
+    print(f"{B}ccp install-frida{X}")
+    if getattr(args, "uninstall", False):
+        result = rt.uninstall_frida(verbose=False)
+        if result["agent_removed"]:
+            print(f"  {G}{CHECK}{X} agent removed")
+        if result["wrapper_removed"]:
+            print(f"  {G}{CHECK}{X} wrapper removed")
+        if not (result["agent_removed"] or result["wrapper_removed"]):
+            print(f"  {Y}{WARN_ICON}{X} nothing installed at default paths")
+        return 0
+
+    result = rt.install_frida(force=getattr(args, "force", False), verbose=False)
+    if result["frida"]:
+        prefix = G if result["frida"].startswith("frida ") else Y
+        print(f"  {prefix}·{X} {result['frida']}")
+    if result["agent_installed"]:
+        print(f"  {G}{CHECK}{X} agent  → {result['agent_dst']}")
+    elif result["agent_skipped"]:
+        print(f"  {Y}skip{X}    agent (exists; --force to overwrite): {result['agent_dst']}")
+    if result["wrapper_installed"]:
+        print(f"  {G}{CHECK}{X} wrapper → {result['wrapper_dst']}")
+    elif result["wrapper_skipped"]:
+        print(f"  {Y}skip{X}    wrapper (exists; --force to overwrite): {result['wrapper_dst']}")
+    for err in result["errors"]:
+        print(f"  {R}!!{X} {err}")
+    if result["errors"]:
+        return 1
+    print(f"\n{G}{CHECK} frida runtime installed{X}")
+    print(f"  run: codex-frida exec '<your prompt>'")
+    return 0
+
+
+def cmd_scan_gates(args) -> int:
+    """r2-driven anchor → gate scan. Lists candidate functions per anchor."""
+    from . import deep_scan as ds
+
+    if not ds.have_r2():
+        print(f"{R}error{X} r2 not on PATH (brew install radare2)", file=sys.stderr)
+        return 127
+
+    target = getattr(args, "target", None)
+    if not target:
+        target = find_target()
+        if not target:
+            print(f"{R}error{X} no codex binary found; pass -t <path>", file=sys.stderr)
+            return 1
+    target = Path(target)
+    if not target.is_file():
+        print(f"{R}error{X} target not a file: {target}", file=sys.stderr)
+        return 1
+
+    arch = getattr(args, "arch", "arm64")
+    anchors = getattr(args, "anchor", None) or [
+        "approval is not supported",
+        "is disallowed by requirements",
+        "blocked by method policy",
+        "(deny default)",
+        "ApprovalDecision::Denied",
+        "command execution approval is not supported in exec mode",
+    ]
+
+    print(f"{B}ccp scan-gates{X}")
+    print(f"  target : {target}")
+    print(f"  arch   : {arch}")
+    print(f"  anchors: {len(anchors)}")
+    print()
+
+    found_any = False
+    for anchor in anchors:
+        try:
+            cands = ds.find_gate_candidates(target, anchor, arch=arch)
+        except Exception as exc:
+            print(f"  {R}!!{X} {anchor!r}: {exc}", file=sys.stderr)
+            continue
+        if not cands:
+            print(f"  {Y}·{X} {anchor!r}  — no candidates")
+            continue
+        found_any = True
+        print(ds.render_candidates(cands))
+
+    if not found_any:
+        print(f"\n{Y}{WARN_ICON}{X} no gate candidates found across all anchors")
+        return 1
+    return 0
+
+
 # ── entry ─────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -1443,6 +1533,20 @@ def main() -> int:
         help="Install bypass wrapper to ~/.local/bin/codex")
     sub.add_parser("install-config",
         help="Merge bypass defaults into ~/.codex/config.toml")
+    p_if = sub.add_parser("install-frida",
+        help="Install Frida runtime bypass agent (layer 4)")
+    p_if.add_argument("--force", "-f", action="store_true",
+        help="Overwrite existing agent and wrapper")
+    p_if.add_argument("--uninstall", action="store_true",
+        help="Remove the installed agent and wrapper")
+    p_sg = sub.add_parser("scan-gates",
+        help="r2-driven anchor → gate-instruction discovery (development tool)")
+    p_sg.add_argument("-t", "--target", default=None,
+        help="Path to a codex binary (defaults to system codex)")
+    p_sg.add_argument("--anchor", action="append", default=None,
+        help="String anchor to trace; repeat for multiple. Defaults to a curated set.")
+    p_sg.add_argument("--arch", default="arm64", choices=("arm64", "x86_64"),
+        help="Target arch for gate-mnemonic filtering (default arm64)")
 
     args = ap.parse_args()
     if args.cmd is None:
@@ -1464,6 +1568,8 @@ def main() -> int:
         "install-rules":   cmd_install_rules,
         "install-wrapper": cmd_install_wrapper,
         "install-config":  cmd_install_config,
+        "install-frida":   cmd_install_frida,
+        "scan-gates":      cmd_scan_gates,
     }
     fn = dispatch.get(args.cmd)
     if fn is None:
