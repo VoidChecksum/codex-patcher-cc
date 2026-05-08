@@ -20,7 +20,7 @@ class TestPatchesHaveRequiredFields(unittest.TestCase):
                     self.assertIn(field, data, msg=f"{f.name} missing '{field}'")
 
     def test_type_values_known(self) -> None:
-        known = {"macho_replace", "config_toml", "wrapper"}
+        known = {"macho_replace", "binary_replace", "instr_replace", "config_toml", "wrapper"}
         files = sorted(PATCH_DIR.glob("*.json"))
         for f in files:
             with self.subTest(file=f.name):
