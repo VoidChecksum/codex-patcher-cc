@@ -487,6 +487,36 @@ def patch_binary_inplace(binary: Path, patches: list[dict]) -> dict:
     for p in patches:
         applied_n = 0
         skipped_n = 0
+
+        # ── instr_replace branch: arm64/x86_64 instruction-level patches.
+        # Different schema (anchor + offset_from_anchor + match_bytes_hex)
+        # so handled separately from the regex/byte-search loop below.
+        if p.get("type") == "instr_replace":
+            from .instr_patcher import apply_instr_patch
+            arch = p.get("arch", "arm64")
+            for sub in p.get("patches", []):
+                anchor = sub.get("anchor", "")
+                ofs    = int(sub.get("offset_from_anchor", 0))
+                mbx    = sub.get("match_bytes_hex", "")
+                rbx    = sub.get("replace_bytes_hex", "")
+                amk    = sub.get("applied_marker_hex")
+                if not (anchor and mbx and rbx):
+                    skipped_n += 1
+                    continue
+                applied, _reason = apply_instr_patch(
+                    data, arch=arch, anchor=anchor,
+                    offset_from_anchor=ofs, match_bytes_hex=mbx,
+                    replace_bytes_hex=rbx, applied_marker_hex=amk,
+                )
+                if applied:
+                    applied_n += 1
+                else:
+                    skipped_n += 1
+            per_patch.append({"id": p.get("id", "?"), "applied": applied_n, "skipped": skipped_n})
+            applied_total += applied_n
+            skipped_total += skipped_n
+            continue
+
         for sub in p.get("patches", []):
             search_regex = sub.get("search_regex")
             search       = sub.get("search")
@@ -709,7 +739,7 @@ def _apply_wrapper(p: dict, target: Path | None, dry_run: bool = False) -> tuple
 
 # ── commands ──────────────────────────────────────────────────────────────────
 
-_BINARY_PATCH_TYPES = ("macho_replace", "binary_replace", "elf_replace", "pe_replace")
+_BINARY_PATCH_TYPES = ("macho_replace", "binary_replace", "elf_replace", "pe_replace", "instr_replace")
 
 
 def _is_binary_patch(p: dict) -> bool:
@@ -736,6 +766,16 @@ def _patch_applies_to_format(p: dict, fmt: str) -> bool:
         if formats:
             return fmt in formats
         return fmt in ("macho", "elf", "pe")
+    if t == "instr_replace":
+        # arch-gated: arm64 patches only apply to arm64 binaries; x86_64 to x86_64.
+        # Format-agnostic since instr_replace operates on raw bytes via anchor + offset.
+        formats = p.get("formats")
+        if formats and fmt not in formats:
+            return False
+        # Cheap arch check: caller may have stamped fmt with a hint, but we don't
+        # track arch here. Accept and let apply_instr_patch's byte-match guard skip
+        # mismatches (its match_bytes_hex check catches the wrong arch automatically).
+        return True
     return False
 
 
@@ -791,6 +831,38 @@ def cmd_patch(args) -> int:
             bounds = _binary_string_bounds(data_full)
             for p in applicable:
                 applied_n = 0
+
+                # instr_replace dry-run: check anchor + marker + match bytes
+                if p.get("type") == "instr_replace":
+                    raw = bytes(data_full)
+                    for sub in p.get("patches", []):
+                        anchor = sub.get("anchor", "").encode("utf-8", "surrogateescape")
+                        ofs    = int(sub.get("offset_from_anchor", 0))
+                        mbx    = sub.get("match_bytes_hex", "")
+                        amk    = sub.get("applied_marker_hex")
+                        if not (anchor and mbx):
+                            continue
+                        ap = raw.find(anchor)
+                        if ap < 0:
+                            continue
+                        target_off = ap + ofs
+                        if target_off < 0 or target_off + len(mbx) // 2 > len(raw):
+                            continue
+                        actual = raw[target_off: target_off + len(mbx) // 2]
+                        try:
+                            expected = bytes.fromhex(mbx)
+                            marker_bytes = bytes.fromhex(amk) if amk else None
+                        except ValueError:
+                            continue
+                        if marker_bytes and actual == marker_bytes:
+                            continue  # already applied
+                        if actual == expected:
+                            applied_n += 1
+                    msg = "no-op (already applied)" if applied_n == 0 else f"would apply {applied_n} instr-replace(s)"
+                    print(f"  {G}ok{X}    {p.get('id','?'):40s}  {msg}")
+                    ok += 1
+                    continue
+
                 for sub in p.get("patches", []):
                     marker = sub.get("applied_marker")
                     if marker:
