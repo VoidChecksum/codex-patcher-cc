@@ -59,18 +59,27 @@ def have_r2() -> bool:
     return shutil.which("r2") is not None or shutil.which("radare2") is not None
 
 
-def _r2_cmdj(binary: Path, *cmds: str, timeout: float = 60.0) -> list:
-    """Run r2 with -A (full analysis) and a sequence of `j`-suffix commands.
+def _r2_cmdj(
+    binary: Path,
+    *cmds: str,
+    timeout: float = 600.0,
+    analysis: str = "aa",
+) -> list:
+    """Run r2 with `analysis` (default `aa` — fast, sufficient for xref discovery)
+    and a sequence of `j`-suffix commands.
 
     Returns the parsed JSON of the LAST command's output. r2 commands are
     chained with `;`. Use only `cmdj`-style commands that emit JSON.
+
+    The 193 MB codex binary takes ~30-60 s for `aa` and 5+ minutes for `aaa`.
+    `aa` is enough for `izj`, `axtj`, `afij`, `pdfj` against function entries.
     """
     if not have_r2():
         raise RuntimeError("r2 not on PATH (brew install radare2)")
 
-    script = ";".join(cmds)
+    script = ";".join((analysis, *cmds))
     out = subprocess.run(
-        ["r2", "-q0", "-A", "-c", script, str(binary)],
+        ["r2", "-q0", "-c", script, str(binary)],
         capture_output=True,
         text=True,
         timeout=timeout,
