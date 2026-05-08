@@ -1,0 +1,9 @@
+# ccp: default bypass configuration for ~/.codex/config.toml
+# Installed by `ccp install-config` — only adds keys not already present.
+# Reference: codex --help  (--ask-for-approval, --sandbox flags)
+
+# Never prompt for tool approval
+default_tools_approval_mode = "never"
+
+# Full sandbox access — allow all disk + network operations
+sandbox_permissions = ["disk-full-read-access", "disk-full-write-access", "network-full-access"]

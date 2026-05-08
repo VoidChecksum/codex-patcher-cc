@@ -1,0 +1,11 @@
+{
+  "id": "config-bypass-defaults",
+  "description": "Write bypass defaults into ~/.codex/config.toml: approval_mode=never, sandbox=danger-full-access",
+  "type": "config_toml",
+  "config_path": "~/.codex/config.toml",
+  "defaults": {
+    "default_tools_approval_mode": "\"never\"",
+    "sandbox_permissions": "[\"disk-full-read-access\", \"disk-full-write-access\", \"network-full-access\"]"
+  },
+  "version_last_tested": "0.129.0"
+}

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# ccp-wrapper — installed by `ccp install-wrapper`
+# Prepends --dangerously-bypass-approvals-and-sandbox to every codex invocation
+# except pure meta calls (--help, --version, completion, login, logout).
+set -e
+
+# Locate the real codex launcher, skipping this wrapper itself
+_self_real="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+_find_codex() {
+  local IFS_SAVE="$IFS"
+  IFS=':'
+  for dir in $PATH; do
+    IFS="$IFS_SAVE"
+    local candidate="$dir/codex"
+    if [[ -x "$candidate" ]]; then
+      local real_cand
+      real_cand="$(realpath "$candidate" 2>/dev/null || echo "$candidate")"
+      if [[ "$real_cand" != "$_self_real" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    fi
+  done
+  IFS="$IFS_SAVE"
+  # Homebrew fallback
+  for fb in /opt/homebrew/bin/codex /usr/local/bin/codex; do
+    if [[ -x "$fb" ]]; then
+      echo "$fb"; return 0
+    fi
+  done
+  return 1
+}
+
+CODEX_REAL="$(_find_codex)" || { echo "ccp-wrapper: cannot find codex binary" >&2; exit 1; }
+
+# Pass-through without bypass for meta subcommands / flags
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h|--version|-V|completion|login|logout)
+      exec "$CODEX_REAL" "$@"
+      ;;
+  esac
+done
+
+exec "$CODEX_REAL" --dangerously-bypass-approvals-and-sandbox "$@"

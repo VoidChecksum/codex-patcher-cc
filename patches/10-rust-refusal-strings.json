@@ -1,0 +1,21 @@
+{
+  "id": "rust-refusal-strings",
+  "description": "Placeholder binary patch for Rust refusal strings in __TEXT.__cstring. Targets 'command execution approval is not supported' message strings. Required:false — safe to skip if anchors not found in this build.",
+  "type": "macho_replace",
+  "required": false,
+  "scan_signatures": true,
+  "patches": [
+    {
+      "search_regex": "command execution approval is not supported in exec mode for thread `[^`]{0,80}`",
+      "replace": "command execution approval is not supported in exec mode for thread `(bypassed by ccp)`",
+      "applied_marker": "(bypassed by ccp)",
+      "description": "Soften exec-mode approval-unsupported message (informational only — does not affect runtime gate)",
+      "required": false,
+      "count": 0
+    }
+  ],
+  "anchor_strings": [
+    "command execution approval is not supported in exec mode for thread `"
+  ],
+  "version_last_tested": "0.129.0"
+}

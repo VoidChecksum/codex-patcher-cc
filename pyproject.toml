@@ -1,0 +1,40 @@
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "ccp"
+version         = "0.129.0"
+description     = "Codex CLI Patcher — Rust Mach-O patches + wrapper + config installer for OpenAI Codex CLI"
+readme          = "README.md"
+requires-python = ">=3.9"
+license         = { text = "GPL-3.0-or-later" }
+authors         = [{ name = "VoidChecksum" }]
+keywords        = ["codex", "openai", "patching", "cli", "reverse-engineering"]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage   = "https://github.com/VoidChecksum/codex-patcher-cc"
+Repository = "https://github.com/VoidChecksum/codex-patcher-cc"
+Issues     = "https://github.com/VoidChecksum/codex-patcher-cc/issues"
+
+[project.scripts]
+ccp = "ccp.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["ccp*"]
+
+[tool.setuptools.package-data]
+ccp = [
+    "../patches/*.json",
+    "../contrib/preload/*",
+    "../contrib/rules/*.md",
+    "../contrib/rules/*.toml",
+    "../contrib/rules/hooks/*.sh",
+    "../contrib/wrappers/*",
+]
