@@ -11,3 +11,6 @@ build/
 backups/
 *.bak
 .DS_Store
+
+# OMC agent runtime state — local only
+.omc/

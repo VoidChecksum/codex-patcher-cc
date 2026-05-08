@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"which r2 radare2 pwndbg zydis file 2>&1\",\"description\":\"Verify reverse engineering tooling\"}",
-  "error": "Exit code 1\n/opt/homebrew/bin/r2\n/opt/homebrew/bin/radare2\npwndbg not found\nzydis not found\n/usr/bin/file",
-  "timestamp": "2026-05-08T22:49:14.010Z",
-  "retry_count": 1
-}
