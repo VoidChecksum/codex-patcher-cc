@@ -12,6 +12,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://python.org)
 [![GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 [![Codex CLI](https://img.shields.io/badge/codex--cli-0.129.0-orange)](https://github.com/openai/codex)
+[![patches](https://img.shields.io/badge/patches-4-blue)](patches/)
 
 **3-layer bypass for OpenAI Codex CLI**: wrapper script + config defaults + in-place Rust Mach-O binary patches. Regex-signature patches survive minor/patch releases.
 
@@ -131,7 +132,8 @@ ccp verify
 |---|---|---|
 | `config-bypass-defaults` | config_toml | Write `approval_mode=never` + `sandbox=full-access` to config.toml |
 | `wrapper-bypass-flags` | wrapper | Install `~/.local/bin/codex` wrapper with `--dangerously-bypass-approvals-and-sandbox` |
-| `rust-refusal-strings` | macho_replace | Soften approval-unsupported messages in `__TEXT.__cstring` (optional) |
+| `rust-refusal-strings` | macho_replace | Soften approval-unsupported messages in `__TEXT.__cstring` (cosmetic, optional) |
+| `seatbelt-allow-default` | macho_replace | macOS Seatbelt: flip embedded SBPL profile head `(deny default)` → `(allow default)` (real gate flip; complements `--dangerously-bypass-approvals-and-sandbox` by neutering seatbelt even when bypass flag is not used) |
 
 ---
 
@@ -147,6 +149,7 @@ patches/
   01-config-bypass-defaults.json
   02-wrapper-bypass-flags.json
   10-rust-refusal-strings.json
+  11-seatbelt-allow-default.json
 contrib/
   wrappers/codex             bash wrapper script
   rules/codex-config.toml   TOML config template

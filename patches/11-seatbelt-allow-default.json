@@ -1,0 +1,24 @@
+{
+  "id": "seatbelt-allow-default",
+  "description": "macOS Seatbelt sandbox: flip the embedded SBPL profile head from `(deny default)` to `(allow default)`. The profile starts closed-by-default and then explicitly allows a curated list of operations. Once the head is `(allow default)`, every subsequent `(allow ...)` clause is a no-op, every `(deny ...)` still applies (none in the base profile), and the kernel grants the process the same access set as if no sandbox were applied. This is a real gate flip — when codex spawns sandbox-exec with this profile, the child has full filesystem/network/IPC access. Complements --dangerously-bypass-approvals-and-sandbox by making the seatbelt profile permissive even when the bypass flag is NOT set (e.g. --sandbox workspace-write still works but is no longer restrictive). Length-preserving: `(deny default)\\n` (15 bytes) → `(allow default)` (15 bytes); the trailing newline is consumed but the next byte is also `\\n`, so SBPL syntax remains valid.",
+  "type": "macho_replace",
+  "validate_macho": true,
+  "scan_signatures": true,
+  "required": false,
+  "patches": [
+    {
+      "search_regex": "\\(deny default\\)\\n",
+      "replace": "(allow default)",
+      "applied_marker": "(allow default)",
+      "description": "Flip Seatbelt SBPL head deny→allow",
+      "required": false,
+      "count": 0
+    }
+  ],
+  "anchor_strings": [
+    "; start with closed-by-default",
+    "(deny default)",
+    "; child processes inherit the policy of their parent"
+  ],
+  "version_last_tested": "0.129.0"
+}
