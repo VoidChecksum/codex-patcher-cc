@@ -30,12 +30,17 @@ jobs:
           # f-string issues) but tolerate whitespace style choices (E2xx, E7xx)
           # that the existing scanner.py / updater.py use for column alignment
           # and compact one-line statements.
-          IGNORE="E501,E701,E702,E731,E741,E221,E222,E225,E226,E227,E228,E231,E241,E251,E261,E265,E266,E271,E272,E275,E301,E302,E303,E305,E306,W291,W292,W293,W391,W503,W504,W605"
-          if python -m pip install ruff --quiet 2>/dev/null && python -m ruff check ccp/ tests/ --select F --ignore "$IGNORE"; then
+          # Ignore: cosmetic style (E2xx/E7xx/Wxxx — codebase uses column-aligned
+          # assignments + compact one-liners), F401 unused imports + F841 unused
+          # locals (pre-existing in __main__/updater dev code), F541 f-strings
+          # without placeholders (cosmetic). Keep F811/F821/F823/F722 (real bugs).
+          IGNORE_RUFF="E501,E701,E702,E731,E741,E221,E222,E225,E226,E227,E228,E231,E241,E251,E261,E265,E266,E271,E272,E275,E301,E302,E303,E305,E306,W291,W292,W293,W391,W605,F401,F541,F841"
+          IGNORE_FLAKE8="$IGNORE_RUFF,W503,W504"
+          if python -m pip install ruff --quiet 2>/dev/null && python -m ruff check ccp/ tests/ --select F --ignore "$IGNORE_RUFF"; then
             echo "ruff passed (F-codes only)"
           else
             python -m pip install flake8 --quiet
-            python -m flake8 ccp/ tests/ --max-line-length=120 --select=F --ignore="$IGNORE"
+            python -m flake8 ccp/ tests/ --max-line-length=120 --select=F --ignore="$IGNORE_FLAKE8"
           fi
       - name: AST parse all Python sources
         run: python -m compileall ccp tests

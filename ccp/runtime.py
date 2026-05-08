@@ -102,7 +102,7 @@ def install_frida(force: bool = False, verbose: bool = True) -> dict:
 
     if verbose:
         if result["wrapper_installed"] or result["wrapper_skipped"]:
-            sys.stderr.write(f"  run: codex-frida exec '<your prompt>'\n")
+            sys.stderr.write("  run: codex-frida exec '<your prompt>'\n")
             if WRAPPER_DST_DIR not in [Path(p) for p in os.environ.get("PATH", "").split(":") if p]:
                 sys.stderr.write(
                     f"  warn  {WRAPPER_DST_DIR} is not on PATH; "
