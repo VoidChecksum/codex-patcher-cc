@@ -702,56 +702,107 @@ def cmd_scan(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    """Full health report."""
+    """Full health report: sha, patches applied, sig drift, backup count, upstream, codex version."""
+    from . import __version__ as _ver
+
     target  = find_target()
     patches = load_patches()
-    from . import __version__ as _ver
+    binary_patches = [p for p in patches if p.get("type") == "macho_replace"]
+
     print(f"{B}ccp doctor{X}")
     print(f"  ccp ver    : {_ver}")
-    print(f"  patches    : {len(patches)}")
+
+    # ── target ────────────────────────────────────────────────────────────────
     if not target:
-        print(f"  target     : {R}NOT FOUND{X}")
-        return 2
-    print(f"  target     : {target}")
-    print(f"  sha256     : {sha256_short(target)}")
-    print(f"  size       : {target.stat().st_size // 1024 // 1024} MB")
+        print(f"  target     : {R}NOT FOUND — install via 'npm install -g @openai/codex'{X}")
+    else:
+        print(f"  target     : {target}")
+        print(f"  sha256     : {sha256_short(target)}")
+        sz_mb = target.stat().st_size / 1024 / 1024
+        print(f"  size       : {sz_mb:.1f} MB")
 
-    # sig scan
-    try:
-        text = _scanner.load_text_from_target(target)
-        rows = _scanner.SigScanner(text).scan_patches(_scanner.load_patches_from_dir(PATCH_DIR))
-        drift = [r["id"] for r in rows if r["status"] == "drift"]
-        if drift:
-            print(f"  {R}sig drift  : {len(drift)} {DOT} {', '.join(drift[:3])}{X}")
-        else:
-            print(f"  {G}sig drift  : 0{X}")
-    except Exception as e:
-        print(f"  {R}sig scan   : failed — {e}{X}")
+    # ── patches count ─────────────────────────────────────────────────────────
+    print(f"  patches    : {len(patches)} total  ({len(binary_patches)} binary, {len(patches) - len(binary_patches)} meta)")
 
-    # verify markers
-    try:
-        rc_v = cmd_verify(type("A", (), {})())
-    except SystemExit:
-        rc_v = 1
-    print(f"  applied    : {'all' if rc_v == 0 else 'partial/none'}")
+    # ── per-patch applied status ──────────────────────────────────────────────
+    if target:
+        data   = bytearray(target.read_bytes())
+        bounds = _string_section_bounds(data)
+        for p in binary_patches:
+            applied = False
+            for sub in p.get("patches", []):
+                marker = sub.get("applied_marker")
+                if marker:
+                    marker_b = marker.encode("utf-8", "surrogateescape")
+                    if any(data.find(marker_b, lo, hi) >= 0 for lo, hi in bounds):
+                        applied = True
+                        break
+            icon = f"{G}{CHECK}{X}" if applied else f"{Y}{WARN_ICON}{X}"
+            print(f"  {icon} patch      : {p.get('id','?')}  ({'applied' if applied else 'not applied'})")
+        for p in [x for x in patches if x.get("type") not in ("macho_replace",)]:
+            print(f"  {DOT} meta       : {p.get('id','?')}  (type={p.get('type','?')})")
 
-    # backups
+    # ── backups ───────────────────────────────────────────────────────────────
     baks = sorted(BACKUP_DIR.glob("codex.*.bak"))
-    print(f"  backups    : {len(baks)} in {BACKUP_DIR}")
+    if baks:
+        print(f"  {G}backups    : {len(baks)}{X}")
+        for bak in baks[-3:]:
+            print(f"               {bak}")
+        if len(baks) > 3:
+            print(f"               … {len(baks) - 3} older")
+    else:
+        print(f"  backups    : 0  (run 'ccp patch' to create first backup)")
 
-    # upstream
+    # ── sig drift ─────────────────────────────────────────────────────────────
+    if target:
+        try:
+            text = _scanner.load_text_from_target(target)
+            rows = _scanner.SigScanner(text).scan_patches(_scanner.load_patches_from_dir(PATCH_DIR))
+            drift   = [r["id"] for r in rows if r["status"] == "drift"]
+            total_a = len([r for r in rows if r.get("anchors_found", 0) > 0])
+            total_d = len([r for r in rows if r.get("anchors_declared", 0) > 0])
+            if drift:
+                print(f"  {R}sig drift  : {len(drift)} {DOT} {', '.join(drift[:3])}{'...' if len(drift) > 3 else ''}{X}")
+            else:
+                print(f"  {G}sig drift  : 0 (all anchors locatable){X}")
+            print(f"  anchor cov : {total_a}/{total_d} patches have anchors resolved")
+        except Exception as e:
+            print(f"  {R}sig scan   : failed — {e}{X}")
+
+    # ── Codex CLI version ─────────────────────────────────────────────────────
+    try:
+        r = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=8)
+        codex_ver = (r.stdout or r.stderr or "").strip().splitlines()[0] if r.returncode == 0 else None
+        if codex_ver:
+            print(f"  {G}codex ver  : {codex_ver}{X}")
+        else:
+            print(f"  {Y}codex ver  : not found (codex not on PATH){X}")
+    except Exception:
+        print(f"  {Y}codex ver  : not found (codex not on PATH){X}")
+
+    # ── wrapper / config / AGENTS.md installed ────────────────────────────────
+    codex_dir  = Path.home() / ".codex"
+    wrapper    = Path.home() / ".local" / "bin" / "codex"
+    w_ok = wrapper.exists() and "ccp-wrapper" in (wrapper.read_text(encoding="utf-8", errors="replace") if wrapper.exists() else "")
+    c_ok = (codex_dir / "config.toml").exists()
+    a_ok = (codex_dir / "AGENTS.md").exists()
+    print(f"  wrapper    : {G+'installed'+X if w_ok else Y+'not installed — run ccp install-wrapper'+X}")
+    print(f"  config     : {G+'installed'+X if c_ok else Y+'not installed — run ccp install-config'+X}")
+    print(f"  AGENTS.md  : {G+'installed'+X if a_ok else Y+'not installed — run ccp install-rules'+X}")
+
+    # ── upstream ──────────────────────────────────────────────────────────────
     try:
         info = _updater.upstream_status(PATCH_DIR)
         if info["drift"]:
             print(f"  {Y}upstream   : behind — run 'ccp self-update'{X}")
         elif info["remote_commit"]:
-            print(f"  {G}upstream   : current{X}")
+            print(f"  {G}upstream   : current ({info['remote_commit'][:7]}){X}")
         else:
             print(f"  upstream   : unreachable")
     except Exception:
         print(f"  upstream   : error")
 
-    return 0
+    return 0 if target else 2
 
 
 def cmd_watch(args) -> int:
@@ -879,23 +930,81 @@ def _deep_merge(dst: dict, src: dict) -> dict:
     return dst
 
 
+_CCP_AGENTS_START = "<!-- ccp:authorization:start -->"
+_CCP_AGENTS_END   = "<!-- ccp:authorization:end -->"
+
+
 def cmd_install_rules(args) -> int:
-    """Deploy contrib/rules/AUTHORIZATION.md into ~/.codex/ as hooks context."""
+    """Deploy contrib/rules/ into ~/.codex/: AUTHORIZATION.md, AGENTS.md, config.toml."""
     src_dir = ROOT / "contrib" / "rules"
     if not src_dir.exists():
         print(f"{R}contrib/rules/ missing{X}")
         return 2
 
+    force = getattr(args, "force", False)
     codex_dir = Path.home() / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write AUTHORIZATION.md into ~/.codex/
-    auth_src = (src_dir / "AUTHORIZATION.md").read_text(encoding="utf-8")
-    auth_dst = codex_dir / "AUTHORIZATION.md"
-    auth_dst.write_text(auth_src, encoding="utf-8")
-    print(f"  {G}{CHECK}{X} AUTHORIZATION.md {ARROW} {auth_dst}")
+    installed = []
+    skipped   = []
 
-    print(f"\n{G}{CHECK} authorization rules installed{X}")
+    # ── AUTHORIZATION.md ──────────────────────────────────────────────────────
+    auth_src_path = src_dir / "AUTHORIZATION.md"
+    if auth_src_path.exists():
+        auth_dst = codex_dir / "AUTHORIZATION.md"
+        auth_dst.write_text(auth_src_path.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"  {G}{CHECK}{X} AUTHORIZATION.md {ARROW} {auth_dst}")
+        installed.append("AUTHORIZATION.md")
+
+    # ── AGENTS.md (instruction-prefix, read by Codex CLI at session start) ────
+    agents_src_path = src_dir / "AGENTS.md"
+    if agents_src_path.exists():
+        agents_dst = codex_dir / "AGENTS.md"
+        agents_src = agents_src_path.read_text(encoding="utf-8")
+        block = f"{_CCP_AGENTS_START}\n{agents_src.rstrip()}\n{_CCP_AGENTS_END}\n"
+        if agents_dst.exists():
+            existing = agents_dst.read_text(encoding="utf-8")
+            if _CCP_AGENTS_START in existing and not force:
+                # already injected — refresh the block
+                existing = re.sub(
+                    f"{re.escape(_CCP_AGENTS_START)}.*?{re.escape(_CCP_AGENTS_END)}\n?",
+                    "", existing, flags=re.DOTALL,
+                )
+                merged = block + "\n---\n\n" + existing.lstrip()
+            elif force or _CCP_AGENTS_START not in existing:
+                merged = block + "\n---\n\n" + existing.lstrip()
+            else:
+                merged = block
+        else:
+            merged = block
+        agents_dst.write_text(merged, encoding="utf-8")
+        print(f"  {G}{CHECK}{X} AGENTS.md {ARROW} {agents_dst}")
+        installed.append("AGENTS.md")
+
+    # ── config.toml — create with bypass defaults if absent (or --force) ──────
+    config_path = codex_dir / "config.toml"
+    config_src  = src_dir / "codex-config.toml"
+    if config_path.exists() and not force:
+        print(f"  {Y}{WARN_ICON}{X}  config.toml already exists — skipping (use --force to overwrite)")
+        skipped.append("config.toml")
+    elif config_src.exists():
+        # delegate to install-config logic
+        class _ICA:
+            pass
+        _saved = config_path
+        rc = cmd_install_config(_ICA())
+        if rc == 0:
+            installed.append("config.toml")
+    else:
+        skipped.append("config.toml (codex-config.toml template missing)")
+
+    # ── summary ───────────────────────────────────────────────────────────────
+    print()
+    if installed:
+        print(f"{G}{CHECK} installed:{X} {', '.join(installed)}")
+    if skipped:
+        print(f"{Y}{WARN_ICON}  skipped:{X}  {', '.join(skipped)}")
+    print(f"  revert: remove {codex_dir}/AUTHORIZATION.md and {codex_dir}/AGENTS.md manually")
     return 0
 
 
@@ -1011,8 +1120,10 @@ def main() -> int:
     p_w.add_argument("--interval", "-i", type=int, default=10,
         help="Poll interval in seconds (default 10)")
 
-    sub.add_parser("install-rules",
-        help="Deploy operator-authorization rules to ~/.codex/")
+    p_ir = sub.add_parser("install-rules",
+        help="Deploy operator-authorization rules to ~/.codex/ (AUTHORIZATION.md, AGENTS.md, config.toml)")
+    p_ir.add_argument("--force", "-f", action="store_true",
+        help="Overwrite existing config.toml and refresh AGENTS.md block")
     sub.add_parser("install-wrapper",
         help="Install bypass wrapper to ~/.local/bin/codex")
     sub.add_parser("install-config",

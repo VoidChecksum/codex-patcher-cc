@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python-smoke:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Lint (ruff preferred, flake8 fallback)
+        run: |
+          if python -m pip install ruff --quiet 2>/dev/null && python -m ruff check ccp/ tests/ --select E,W,F --ignore E501; then
+            echo "ruff passed"
+          else
+            python -m pip install flake8 --quiet
+            python -m flake8 ccp/ tests/ --max-line-length=120 --ignore=E501,W503
+          fi
+      - name: AST parse all Python sources
+        run: python -m compileall ccp tests
+      - name: Validate patches JSON
+        run: |
+          python - <<'EOF'
+          import json, sys
+          from pathlib import Path
+          errs = []
+          for f in sorted(Path("patches").glob("*.json")):
+              try:
+                  d = json.loads(f.read_text())
+                  for field in ("id", "description", "type"):
+                      if field not in d:
+                          errs.append(f"{f.name}: missing '{field}'")
+              except json.JSONDecodeError as e:
+                  errs.append(f"{f.name}: {e}")
+          if errs:
+              print("\n".join(errs)); sys.exit(1)
+          print(f"OK: {len(list(Path('patches').glob('*.json')))} patch files valid")
+          EOF
+      - name: CLI smoke tests
+        run: |
+          python -m ccp --help
+          python -m ccp list
+      - name: Run pytest
+        run: |
+          python -m pip install pytest --quiet
+          python -m pytest tests/ -v
